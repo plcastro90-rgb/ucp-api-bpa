@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
@@ -12,6 +13,15 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
+  }
+});
+
+// Configuração do Nodemailer com as variáveis de ambiente do Render (sem espaços na senha)
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
 });
 
@@ -48,7 +58,6 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    // Verificar se o nick já existe
     const usuarioExistente = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1)', [nick]);
     if (usuarioExistente.rows.length > 0) {
       return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
@@ -56,8 +65,7 @@ app.post('/api/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(pass, 10);
     
-    // Inserir novo utilizador no Neon
-    const novoUser = await pool.query(
+    await pool.query(
       `INSERT INTO usuarios (nick, senha, email) VALUES ($1, $2, $3) RETURNING *`,
       [nick, hashedPassword, email || '']
     );
@@ -106,6 +114,40 @@ app.post('/api/login', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao autenticar.' });
+  }
+});
+
+// Nova Rota de Recuperação de Palavra-passe
+app.post('/api/forgot-password', async (req, res) => {
+  const { nick, email } = req.body;
+
+  if (!nick || !email) {
+    return res.json({ sucesso: false, mensagem: 'Preencha o nick e o e-mail de recuperação.' });
+  }
+
+  try {
+    const resultado = await pool.query(
+      'SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1) AND LOWER(email) = LOWER($2)',
+      [nick, email]
+    );
+
+    if (resultado.rows.length === 0) {
+      return res.json({ sucesso: false, mensagem: 'Nenhum registo encontrado com este nick e e-mail.' });
+    }
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Brasil Play Alpha - Recuperação de Palavra-passe',
+      text: `Olá ${nick}, recebemos um pedido para recuperar a palavra-passe da sua conta na UCP do Brasil Play Alpha. Utilize as ferramentas do servidor para definir uma nova palavra-passe.`
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({ sucesso: true, mensagem: 'Instruções enviadas com sucesso para o seu e-mail!' });
+  } catch (error) {
+    console.error('Erro ao processar recuperação de senha:', error);
+    res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao enviar o e-mail de recuperação.' });
   }
 });
 
