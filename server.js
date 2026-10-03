@@ -1,5 +1,5 @@
 const express = require('express');
-const mysql = require('mysql2');
+const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 
@@ -7,34 +7,34 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexão com o banco de dados ISOLADO da UCP (Pode usar um banco gratuito exclusivo para o site)
-const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 3306,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-
-// Criar a tabela UCP automaticamente se ela não existir
-db.query(`
-  CREATE TABLE IF NOT EXISTS ucp_usuarios (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    nick VARCHAR(50) UNIQUE NOT NULL,
-    senha VARCHAR(255) NOT NULL,
-    email VARCHAR(100),
-    dinheiro DECIMAL(12,2) DEFAULT 5000.00,
-    banco DECIMAL(12,2) DEFAULT 1000.00,
-    level INT DEFAULT 1,
-    organizacao VARCHAR(50) DEFAULT 'Civil / Nenhum',
-    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`, (err) => {
-  if (err) console.error('Erro ao criar tabela UCP:', err);
-  else console.log('Tabela UCP independente verificada/criada com sucesso.');
+// Conecta ou cria um banco de dados SQLite local automático
+const db = new sqlite3.Database('./database.sqlite', (err) => {
+  if (err) {
+    console.error('Erro ao abrir o banco de dados SQLite:', err.message);
+  } else {
+    console.log('Conectado ao banco de dados SQLite local com sucesso.');
+    
+    // Criar a tabela UCP automaticamente
+    db.run(`
+      CREATE TABLE IF NOT EXISTS ucp_usuarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nick TEXT UNIQUE NOT NULL,
+        senha TEXT NOT NULL,
+        email TEXT,
+        dinheiro REAL DEFAULT 5000.00,
+        banco REAL DEFAULT 1000.00,
+        level INTEGER DEFAULT 1,
+        organizacao TEXT DEFAULT 'Civil / Nenhum',
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (errCreate) => {
+      if (errCreate) {
+        console.error('Erro ao criar tabela:', errCreate.message);
+      } else {
+        console.log('Tabela ucp_usuarios verificada/criada com sucesso.');
+      }
+    });
+  }
 });
 
 // Rota de Registo Independente
@@ -42,33 +42,34 @@ app.post('/api/register', async (req, res) => {
   const { nick, pass, email } = req.body;
 
   if (!nick || !pass) {
-    return res.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
+    return.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
   }
 
   try {
-    // Verifica se o nick já existe na UCP
-    db.query('SELECT * FROM ucp_usuarios WHERE nick = ?', [nick], async (err, results) => {
+    db.get('SELECT * FROM ucp_usuarios WHERE nick = ?', [nick], async (err, row) => {
       if (err) {
         console.error(err);
         return res.status(500).json({ sucesso: false, mensagem: 'Erro interno no servidor.' });
       }
 
-      if (results.length > 0) {
+      if (row) {
         return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
       }
 
-      // Encripta a senha com bcrypt (Segurança máxima, o dono do servidor nem ninguém consegue ver a senha real)
       const hashedPassword = await bcrypt.hash(pass, 10);
 
-      const insertQuery = 'INSERT INTO ucp_usuarios (nick, senha, email) VALUES (?, ?, ?)';
-      db.query(insertQuery, [nick, hashedPassword, email || ''], (err, result) => {
-        if (err) {
-          console.error(err);
-          return res.status(500).json({ sucesso: false, mensagem: 'Erro ao registar conta.' });
-        }
+      db.run(
+        'INSERT INTO ucp_usuarios (nick, senha, email) VALUES (?, ?, ?)',
+        [nick, hashedPassword, email || ''],
+        function (errInsert) {
+          if (errInsert) {
+            console.error(errInsert);
+            return res.status(500).json({ sucesso: false, mensagem: 'Erro ao registar conta.' });
+          }
 
-        res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
-      });
+          res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
+        }
+      );
     });
   } catch (error) {
     console.error(error);
@@ -84,19 +85,16 @@ app.post('/api/login', (req, res) => {
     return res.json({ sucesso: false, mensagem: 'Preencha todos os campos.' });
   }
 
-  db.query('SELECT * FROM ucp_usuarios WHERE nick = ?', [nick], async (err, results) => {
+  db.get('SELECT * FROM ucp_usuarios WHERE nick = ?', [nick], async (err, user) => {
     if (err) {
       console.error(err);
       return res.status(500).json({ sucesso: false, mensagem: 'Erro interno no servidor.' });
     }
 
-    if (results.length === 0) {
-      return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado.' });
+    if (!user) {
+      return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
     }
 
-    const user = results[0];
-
-    // Compara a senha digitada com o hash seguro guardado no banco
     const senhaCorreta = await bcrypt.compare(pass, user.senha);
 
     if (!senhaCorreta) {
