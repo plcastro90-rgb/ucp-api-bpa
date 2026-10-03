@@ -1,5 +1,6 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
+const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 
@@ -7,94 +8,80 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conecta ou cria um banco de dados SQLite local automático
-const db = new sqlite3.Database('./database.sqlite', (err) => {
-  if (err) {
-    console.error('Erro ao abrir o banco de dados SQLite:', err.message);
-  } else {
-    console.log('Conectado ao banco de dados SQLite local com sucesso.');
-    
-    // Criar a tabela UCP automaticamente
-    db.run(`
-      CREATE TABLE IF NOT EXISTS ucp_usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nick TEXT UNIQUE NOT NULL,
-        senha TEXT NOT NULL,
-        email TEXT,
-        dinheiro REAL DEFAULT 5000.00,
-        banco REAL DEFAULT 1000.00,
-        level INTEGER DEFAULT 1,
-        organizacao TEXT DEFAULT 'Civil / Nenhum',
-        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `, (errCreate) => {
-      if (errCreate) {
-        console.error('Erro ao criar tabela:', errCreate.message);
-      } else {
-        console.log('Tabela ucp_usuarios verificada/criada com sucesso.');
-      }
-    });
-  }
-});
+const filePath = path.join(__dirname, 'usuarios.json');
 
-// Rota de Registo Independente
+// Função para ler utilizadores
+function lerUsuarios() {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify([]));
+  }
+  const data = fs.readFileSync(filePath, 'utf8');
+  try {
+    return JSON.parse(data);
+  } catch (e) {
+    return [];
+  }
+}
+
+// Função para salvar utilizadores
+function salvarUsuarios(usuarios) {
+  fs.writeFileSync(filePath, JSON.stringify(usuarios, null, 2));
+}
+
+// Rota de Registo
 app.post('/api/register', async (req, res) => {
   const { nick, pass, email } = req.body;
 
   if (!nick || !pass) {
-    return.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
+    return res.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
+  }
+
+  const usuarios = lerUsuarios();
+  const existe = usuarios.find(u => u.nick.toLowerCase() === nick.toLowerCase());
+
+  if (existe) {
+    return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
   }
 
   try {
-    db.get('SELECT * FROM ucp_usuarios WHERE nick = ?', [nick], async (err, row) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ sucesso: false, mensagem: 'Erro interno no servidor.' });
-      }
+    const hashedPassword = await bcrypt.hash(pass, 10);
+    const novoUsuario = {
+      id: usuarios.length + 1,
+      nick: nick,
+      senha: hashedPassword,
+      email: email || '',
+      dinheiro: 5000.00,
+      banco: 1000.00,
+      level: 1,
+      organizacao: 'Civil / Nenhum'
+    };
 
-      if (row) {
-        return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
-      }
+    usuarios.push(novoUsuario);
+    salvarUsuarios(usuarios);
 
-      const hashedPassword = await bcrypt.hash(pass, 10);
-
-      db.run(
-        'INSERT INTO ucp_usuarios (nick, senha, email) VALUES (?, ?, ?)',
-        [nick, hashedPassword, email || ''],
-        function (errInsert) {
-          if (errInsert) {
-            console.error(errInsert);
-            return res.status(500).json({ sucesso: false, mensagem: 'Erro ao registar conta.' });
-          }
-
-          res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
-        }
-      );
-    });
+    res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ sucesso: false, mensagem: 'Erro ao processar o registo.' });
   }
 });
 
-// Rota de Login Independente
-app.post('/api/login', (req, res) => {
+// Rota de Login
+app.post('/api/login', async (req, res) => {
   const { nick, pass } = req.body;
 
   if (!nick || !pass) {
     return res.json({ sucesso: false, mensagem: 'Preencha todos os campos.' });
   }
 
-  db.get('SELECT * FROM ucp_usuarios WHERE nick = ?', [nick], async (err, user) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ sucesso: false, mensagem: 'Erro interno no servidor.' });
-    }
+  const usuarios = lerUsuarios();
+  const user = usuarios.find(u => u.nick.toLowerCase() === nick.toLowerCase());
 
-    if (!user) {
-      return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
-    }
+  if (!user) {
+    return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
+  }
 
+  try {
     const senhaCorreta = await bcrypt.compare(pass, user.senha);
 
     if (!senhaCorreta) {
@@ -113,7 +100,10 @@ app.post('/api/login', (req, res) => {
         organizacao: user.organizacao
       }
     });
-  });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao autenticar.' });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
