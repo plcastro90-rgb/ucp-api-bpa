@@ -1,6 +1,5 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 
@@ -8,25 +7,37 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const filePath = path.join(__dirname, 'usuarios.json');
-
-// Função para ler utilizadores
-function lerUsuarios() {
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify([]));
+// Conexão com o PostgreSQL do Neon usando a variável de ambiente do Render
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
   }
-  const data = fs.readFileSync(filePath, 'utf8');
+});
+
+// Criar a tabela de utilizadores automaticamente ao iniciar o servidor
+async function criarTabela() {
+  const query = `
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id SERIAL PRIMARY KEY,
+      nick VARCHAR(50) UNIQUE NOT NULL,
+      senha VARCHAR(255) NOT NULL,
+      email VARCHAR(100),
+      dinheiro NUMERIC(12,2) DEFAULT 5000.00,
+      banco NUMERIC(12,2) DEFAULT 1000.00,
+      level INTEGER DEFAULT 1,
+      organizacao VARCHAR(100) DEFAULT 'Civil / Nenhum'
+    );
+  `;
   try {
-    return JSON.parse(data);
-  } catch (e) {
-    return [];
+    await pool.query(query);
+    console.log("Tabela 'usuarios' verificada/criada com sucesso no Neon!");
+  } catch (err) {
+    console.error("Erro ao criar tabela:", err);
   }
 }
 
-// Função para salvar utilizadores
-function salvarUsuarios(usuarios) {
-  fs.writeFileSync(filePath, JSON.stringify(usuarios, null, 2));
-}
+criarTabela();
 
 // Rota de Registo
 app.post('/api/register', async (req, res) => {
@@ -36,28 +47,20 @@ app.post('/api/register', async (req, res) => {
     return res.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
   }
 
-  const usuarios = lerUsuarios();
-  const existe = usuarios.find(u => u.nick.toLowerCase() === nick.toLowerCase());
-
-  if (existe) {
-    return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
-  }
-
   try {
-    const hashedPassword = await bcrypt.hash(pass, 10);
-    const novoUsuario = {
-      id: usuarios.length + 1,
-      nick: nick,
-      senha: hashedPassword,
-      email: email || '',
-      dinheiro: 5000.00,
-      banco: 1000.00,
-      level: 1,
-      organizacao: 'Civil / Nenhum'
-    };
+    // Verificar se o nick já existe
+    const usuarioExistente = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1)', [nick]);
+    if (usuarioExistente.rows.length > 0) {
+      return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
+    }
 
-    usuarios.push(novoUsuario);
-    salvarUsuarios(usuarios);
+    const hashedPassword = await bcrypt.hash(pass, 10);
+    
+    // Inserir novo utilizador no Neon
+    const novoUser = await pool.query(
+      `INSERT INTO usuarios (nick, senha, email) VALUES ($1, $2, $3) RETURNING *`,
+      [nick, hashedPassword, email || '']
+    );
 
     res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
   } catch (error) {
@@ -74,14 +77,14 @@ app.post('/api/login', async (req, res) => {
     return res.json({ sucesso: false, mensagem: 'Preencha todos os campos.' });
   }
 
-  const usuarios = lerUsuarios();
-  const user = usuarios.find(u => u.nick.toLowerCase() === nick.toLowerCase());
-
-  if (!user) {
-    return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
-  }
-
   try {
+    const resultado = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1)', [nick]);
+    
+    if (resultado.rows.length === 0) {
+      return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
+    }
+
+    const user = resultado.rows[0];
     const senhaCorreta = await bcrypt.compare(pass, user.senha);
 
     if (!senhaCorreta) {
@@ -94,8 +97,8 @@ app.post('/api/login', async (req, res) => {
         nick: user.nick,
         id: user.id,
         rg: user.id + 10000,
-        dinheiro: user.dinheiro,
-        banco: user.banco,
+        dinheiro: parseFloat(user.dinheiro),
+        banco: parseFloat(user.banco),
         level: user.level,
         organizacao: user.organizacao
       }
@@ -108,5 +111,5 @@ app.post('/api/login', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor UCP autónomo rodando na porta ${PORT}`);
+  console.log(`Servidor UCP conectado ao Neon rodando na porta ${PORT}`);
 });
