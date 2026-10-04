@@ -1,40 +1,45 @@
 const express = require('express');
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 const cors = require('cors');
-const crypto = require('crypto');
-const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Configuração da conexão com o MySQL da VPS
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 3306,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-
-// Configuração do Nodemailer para recuperação de senha
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+// Conexão com o PostgreSQL do Neon usando a variável de ambiente do Render
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
   }
 });
 
-// Função auxiliar para gerar hash MD5 (compatível com SA-MP)
-function gerarMD5(senha) {
-  return crypto.createHash('md5').update(senha).digest('hex');
+// Criar a tabela de utilizadores automaticamente ao iniciar o servidor
+async function criarTabela() {
+  const query = `
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id SERIAL PRIMARY KEY,
+      nick VARCHAR(50) UNIQUE NOT NULL,
+      senha VARCHAR(255) NOT NULL,
+      email VARCHAR(100),
+      dinheiro NUMERIC(12,2) DEFAULT 5000.00,
+      banco NUMERIC(12,2) DEFAULT 1000.00,
+      level INTEGER DEFAULT 1,
+      organizacao VARCHAR(100) DEFAULT 'Civil / Nenhum'
+    );
+  `;
+  try {
+    await pool.query(query);
+    console.log("Tabela 'usuarios' verificada/criada com sucesso no Neon!");
+  } catch (err) {
+    console.error("Erro ao criar tabela:", err);
+  }
 }
 
-// Rota de Registo ajustada para a tabela 'players' do SA-MP
+criarTabela();
+
+// Rota de Registo
 app.post('/api/register', async (req, res) => {
   const { nick, pass, email } = req.body;
 
@@ -43,26 +48,28 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    const [existente] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
-    if (existente.length > 0) {
-      return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP/Servidor.' });
+    // Verificar se o nick já existe
+    const usuarioExistente = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1)', [nick]);
+    if (usuarioExistente.rows.length > 0) {
+      return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
     }
 
-    const senhaCriptografada = gerarMD5(pass);
+    const hashedPassword = await bcrypt.hash(pass, 10);
     
-    await pool.query(
-      `INSERT INTO players (Nick, Senha, Level, Dinheiro, Conta) VALUES (?, ?, 1, 5000, 1000)`,
-      [nick, senhaCriptografada]
+    // Inserir novo utilizador no Neon
+    const novoUser = await pool.query(
+      `INSERT INTO usuarios (nick, senha, email) VALUES ($1, $2, $3) RETURNING *`,
+      [nick, hashedPassword, email || '']
     );
 
-    res.json({ sucesso: true, mensagem: 'Conta criada com sucesso!' });
+    res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
   } catch (error) {
-    console.error('Erro ao registar:', error);
-    res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao processar o registo.' });
+    console.error(error);
+    res.status(500).json({ sucesso: false, mensagem: 'Erro ao processar o registo.' });
   }
 });
 
-// Rota de Login estritamente validada para a tabela 'players' do SA-MP
+// Rota de Login
 app.post('/api/login', async (req, res) => {
   const { nick, pass } = req.body;
 
@@ -71,70 +78,38 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    const [resultado] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const resultado = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1)', [nick]);
     
-    // Validação estrita: se não encontrar o registo exato, bloqueia imediatamente
-    if (!resultado || resultado.length === 0) {
+    if (resultado.rows.length === 0) {
       return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
     }
 
-    const user = resultado[0];
-    const senhaCriptografada = gerarMD5(pass);
+    const user = resultado.rows[0];
+    const senhaCorreta = await bcrypt.compare(pass, user.senha);
 
-    // Valida a senha rigorosamente
-    if (user.Senha !== senhaCriptografada && user.Senha !== pass) {
+    if (!senhaCorreta) {
       return res.json({ sucesso: false, mensagem: 'Palavra-passe incorreta.' });
     }
 
     res.json({
       sucesso: true,
       usuario: {
-        nick: user.Nick,
-        id: user.ID || 1,
-        rg: (user.ID || 1) + 10000,
-        dinheiro: parseFloat(user.Dinheiro || 0),
-        banco: parseFloat(user.Conta || 0),
-        level: user.Level || 1,
-        organizacao: user.Membro || 0
+        nick: user.nick,
+        id: user.id,
+        rg: user.id + 10000,
+        dinheiro: parseFloat(user.dinheiro),
+        banco: parseFloat(user.banco),
+        level: user.level,
+        organizacao: user.organizacao
       }
     });
   } catch (error) {
-    console.error('Erro ao fazer login:', error);
+    console.error(error);
     res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao autenticar.' });
-  }
-});
-
-// Rota de Recuperação de Senha
-app.post('/api/forgot-password', async (req, res) => {
-  const { nick, email } = req.body;
-
-  if (!nick) {
-    return res.json({ sucesso: false, mensagem: 'Insira o seu nick.' });
-  }
-
-  try {
-    const [resultado] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
-
-    if (!resultado || resultado.length === 0) {
-      return res.json({ sucesso: false, mensagem: 'Nenhum registo encontrado com este nick.' });
-    }
-
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email || process.env.EMAIL_USER,
-      subject: 'Brasil Play Alpha - Recuperação de Palavra-passe',
-      text: `Olá ${nick}, recebemos um pedido para recuperar a palavra-passe da sua conta.`
-    };
-
-    await transporter.sendMail(mailOptions);
-    res.json({ sucesso: true, mensagem: 'Instruções enviadas com sucesso!' });
-  } catch (error) {
-    console.error('Erro na recuperação de senha:', error);
-    res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao enviar o e-mail.' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor UCP conectado ao MySQL da VPS rodando na porta ${PORT}`);
+  console.log(`Servidor UCP conectado ao Neon rodando na porta ${PORT}`);
 });
