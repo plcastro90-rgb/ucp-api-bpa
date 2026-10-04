@@ -34,7 +34,7 @@ function gerarMD5(senha) {
   return crypto.createHash('md5').update(senha).digest('hex');
 }
 
-// Rota de Registo ajustada para a tabela 'usuarios' do SA-MP
+// Rota de Registo ajustada para a tabela 'players' do SA-MP
 app.post('/api/register', async (req, res) => {
   const { nick, pass, email } = req.body;
 
@@ -43,7 +43,7 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    const [existente] = await pool.query('SELECT * FROM usuarios WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const [existente] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
     if (existente.length > 0) {
       return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP/Servidor.' });
     }
@@ -51,7 +51,7 @@ app.post('/api/register', async (req, res) => {
     const senhaCriptografada = gerarMD5(pass);
     
     await pool.query(
-      `INSERT INTO usuarios (Nick, Senha, Level, Dinheiro, Conta) VALUES (?, ?, 1, 5000, 1000)`,
+      `INSERT INTO players (Nick, Senha, Level, Dinheiro, Conta) VALUES (?, ?, 1, 5000, 1000)`,
       [nick, senhaCriptografada]
     );
 
@@ -62,7 +62,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Rota de Login ajustada para a tabela 'usuarios' do SA-MP
+// Rota de Login estritamente validada para a tabela 'players' do SA-MP
 app.post('/api/login', async (req, res) => {
   const { nick, pass } = req.body;
 
@@ -71,16 +71,17 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    const [resultado] = await pool.query('SELECT * FROM usuarios WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const [resultado] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
     
-    if (resultado.length === 0) {
+    // Validação estrita: se não encontrar o registo exato, bloqueia imediatamente
+    if (!resultado || resultado.length === 0) {
       return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
     }
 
     const user = resultado[0];
     const senhaCriptografada = gerarMD5(pass);
 
-    // Valida tanto em MD5 quanto em texto plano caso o GM salve direto
+    // Valida a senha rigorosamente
     if (user.Senha !== senhaCriptografada && user.Senha !== pass) {
       return res.json({ sucesso: false, mensagem: 'Palavra-passe incorreta.' });
     }
@@ -112,9 +113,9 @@ app.post('/api/forgot-password', async (req, res) => {
   }
 
   try {
-    const [resultado] = await pool.query('SELECT * FROM usuarios WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const [resultado] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
 
-    if (resultado.length === 0) {
+    if (!resultado || resultado.length === 0) {
       return res.json({ sucesso: false, mensagem: 'Nenhum registo encontrado com este nick.' });
     }
 
@@ -122,7 +123,7 @@ app.post('/api/forgot-password', async (req, res) => {
       from: process.env.EMAIL_USER,
       to: email || process.env.EMAIL_USER,
       subject: 'Brasil Play Alpha - Recuperação de Palavra-passe',
-      text: `Olá ${nick}, recebemos um pedido para recuperar a palavra-passe da sua conta. Utilize as ferramentas do servidor para redefinir os seus dados.`
+      text: `Olá ${nick}, recebemos um pedido para recuperar a palavra-passe da sua conta.`
     };
 
     await transporter.sendMail(mailOptions);
