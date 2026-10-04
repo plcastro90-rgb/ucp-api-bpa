@@ -2,20 +2,28 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexão com o PostgreSQL do Neon usando a variável de ambiente do Render
+// Conexão com o PostgreSQL do Neon
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
+  ssl: { rejectUnauthorized: false }
+});
+
+// Configuração do Transporter de E-mail (Gmail ou outro serviço SMTP)
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER, // Ex: seu-email@gmail.com configurado no Render
+    pass: process.env.EMAIL_PASS  // Senha de aplicativo do Gmail
   }
 });
 
-// Criar a tabela de utilizadores automaticamente ao iniciar o servidor
+// Criar tabela de utilizadores incluindo a coluna email e colunas de recuperação
 async function criarTabela() {
   const query = `
     CREATE TABLE IF NOT EXISTS usuarios (
@@ -26,7 +34,9 @@ async function criarTabela() {
       dinheiro NUMERIC(12,2) DEFAULT 5000.00,
       banco NUMERIC(12,2) DEFAULT 1000.00,
       level INTEGER DEFAULT 1,
-      organizacao VARCHAR(100) DEFAULT 'Civil / Nenhum'
+      organizacao VARCHAR(100) DEFAULT 'Civil / Nenhum',
+      reset_token VARCHAR(255),
+      reset_expires TIMESTAMP
     );
   `;
   try {
@@ -43,12 +53,11 @@ criarTabela();
 app.post('/api/register', async (req, res) => {
   const { nick, pass, email } = req.body;
 
-  if (!nick || !pass) {
-    return res.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
+  if (!nick || !pass || !email) {
+    return res.json({ sucesso: false, mensagem: 'Preencha todos os campos obrigatórios.' });
   }
 
   try {
-    // Verificar se o nick já existe
     const usuarioExistente = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1)', [nick]);
     if (usuarioExistente.rows.length > 0) {
       return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
@@ -56,10 +65,9 @@ app.post('/api/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(pass, 10);
     
-    // Inserir novo utilizador no Neon
-    const novoUser = await pool.query(
-      `INSERT INTO usuarios (nick, senha, email) VALUES ($1, $2, $3) RETURNING *`,
-      [nick, hashedPassword, email || '']
+    await pool.query(
+      `INSERT INTO usuarios (nick, senha, email) VALUES ($1, $2, $3)`,
+      [nick, hashedPassword, email]
     );
 
     res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
@@ -106,6 +114,50 @@ app.post('/api/login', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao autenticar.' });
+  }
+});
+
+// Rota de Recuperação de Senha (Esqueci a Senha)
+app.post('/api/forgot-password', async (req, res) => {
+  const { nick, email } = req.body;
+
+  if (!nick || !email) {
+    return res.json({ sucesso: false, mensagem: 'Informe o nick e o e-mail da conta.' });
+  }
+
+  try {
+    const resultado = await pool.query('SELECT * FROM usuarios WHERE LOWER(nick) = LOWER($1) AND email = $2', [nick, email]);
+    
+    if (resultado.rows.length === 0) {
+      return res.json({ sucesso: false, mensagem: 'Conta não encontrada com este nick e e-mail.' });
+    }
+
+    // Gerar senha temporária aleatória de 6 dígitos
+    const novaSenhaTemp = Math.floor(100000 + Math.random() * 900000).toString();
+    const hashedPassword = await bcrypt.hash(novaSenhaTemp, 10);
+
+    // Atualizar a senha no banco imediatamente
+    await pool.query('UPDATE usuarios SET senha = $1 WHERE LOWER(nick) = LOWER($2)', [hashedPassword, nick]);
+
+    // Enviar e-mail com a nova senha temporária
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Brasil Play Alpha - Recuperação de Senha',
+      text: `Olá ${nick},\n\nRecebemos um pedido de recuperação de senha para a sua conta na UCP.\nA sua nova palavra-passe temporária é: ${novaSenhaTemp}\n\nRecomendamos que faça login e altere a sua senha em segurança.`
+    };
+
+    transporter.sendMail(mailOptions, (err, info) => {
+      if (err) {
+        console.error('Erro ao enviar e-mail:', err);
+        return res.json({ sucesso: false, mensagem: 'Erro ao enviar o e-mail de recuperação.' });
+      }
+      res.json({ sucesso: true, mensagem: 'Uma nova senha temporária foi enviada para o seu e-mail!' });
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao processar recuperação.' });
   }
 });
 
