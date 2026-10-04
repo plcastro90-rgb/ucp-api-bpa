@@ -1,158 +1,103 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
-const bcrypt = require('bcrypt');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
 
 const app = express();
+
 app.use(express.json());
 app.use(cors());
 
-const filePath = path.join(__dirname, 'usuarios.json');
+// Variável temporária ou base de dados para guardar os códigos OTP gerados
+// Exemplo: { "seuemail@dominio.com": "123456" }
+const codigosArmazenados = {};
 
-// Configuração do Nodemailer com as credenciais da Brevo
-const transporter = nodemailer.createTransport({
-    host: 'smtp-relay.brevo.com',
-    port: 587,
-    auth: {
-        user: 'plcastro90@gmail.com',
-        pass: 'Xsmtpsib-ce9203d3c7001c5d0e28afaab606ca48e4f008e99185a3f3f567203bb63cc9b9-Me6CRPPSPG8ZrEqx'
-    }
+// Rota de teste para ver se a API está online
+app.get('/', (req, res) => {
+  res.json({ status: "API do Brasil Play Alpha Online!" });
 });
 
-// Objeto temporário para guardar os códigos gerados por e-mail
-const codigosTemporarios = {};
-
-// Função para ler utilizadores
-function lerUsuarios() {
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify([]));
-  }
-  const data = fs.readFileSync(filePath, 'utf8');
-  try {
-    return JSON.parse(data);
-  } catch (e) {
-    return [];
-  }
-}
-
-// Função para salvar utilizadores
-function salvarUsuarios(usuarios) {
-  fs.writeFileSync(filePath, JSON.stringify(usuarios, null, 2));
-}
-
-// Rota para Enviar o Código de Verificação por E-mail
+// Rota para enviar o código OTP utilizando a API HTTP da Brevo (Porta 443 - Sem bloqueios)
 app.post('/api/enviar-codigo', async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ sucesso: false, mensagem: 'E-mail obrigatório.' });
-    }
+  const { email } = req.body;
 
-    const codigo = Math.floor(100000 + Math.random() * 900000).toString();
-    codigosTemporarios[email] = codigo;
-
-    try {
-        await transporter.sendMail({
-            from: '"Brasil Play Alpha" <plcastro90@gmail.com>',
-            to: email,
-            subject: 'Código de Verificação UCP - Brasil Play Alpha',
-            text: `O seu código de verificação para criar a conta é: ${codigo}`
-        });
-        res.json({ sucesso: true, mensagem: 'Código enviado com sucesso para o e-mail!' });
-    } catch (erro) {
-        console.error('Erro ao enviar e-mail:', erro);
-        res.status(500).json({ sucesso: false, mensagem: 'Erro ao enviar o e-mail.' });
-    }
-});
-
-// Rota de Registo com Validação do Código e Salvamento
-app.post('/api/register', async (req, res) => {
-  const { nick, pass, email, codigo } = req.body;
-
-  if (!nick || !pass || !email || !codigo) {
-    return res.json({ sucesso: false, mensagem: 'Preencha todos os campos, incluindo o código de verificação.' });
+  if (!email) {
+    return res.status(400).json({ sucesso: false, mensagem: 'E-mail não fornecido.' });
   }
 
-  // Validar o código de verificação enviado
-  if (!codigosTemporarios[email] || codigosTemporarios[email] !== codigo) {
-    return res.status(400).json({ sucesso: false, mensagem: 'Código de verificação inválido ou expirado!' });
-  }
+  // Gerar código aleatório de 6 dígitos
+  const codigoOtp = Math.floor(100000 + Math.random() * 900000).toString();
 
-  const usuarios = lerUsuarios();
-  const existe = usuarios.find(u => u.nick.toLowerCase() === nick.toLowerCase());
-
-  if (existe) {
-    return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP.' });
-  }
+  // Guardar o código temporariamente associado a este e-mail
+  codigosArmazenados[email] = codigoOtp;
 
   try {
-    const hashedPassword = await bcrypt.hash(pass, 10);
-    const novoUsuario = {
-      id: usuarios.length + 1,
-      nick: nick,
-      senha: hashedPassword,
-      email: email,
-      dinheiro: 5000.00,
-      banco: 1000.00,
-      level: 1,
-      organizacao: 'Civil / Nenhum'
-    };
-
-    usuarios.push(novoUsuario);
-    salvarUsuarios(usuarios);
-
-    // Remove o código temporário após o uso bem-sucedido
-    delete codigosTemporarios[email];
-
-    res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ sucesso: false, mensagem: 'Erro ao processar o registo.' });
-  }
-});
-
-// Rota de Login
-app.post('/api/login', async (req, res) => {
-  const { nick, pass } = req.body;
-
-  if (!nick || !pass) {
-    return res.json({ sucesso: false, mensagem: 'Preencha todos os campos.' });
-  }
-
-  const usuarios = lerUsuarios();
-  const user = usuarios.find(u => u.nick.toLowerCase() === nick.toLowerCase());
-
-  if (!user) {
-    return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
-  }
-
-  try {
-    const senhaCorreta = await bcrypt.compare(pass, user.senha);
-
-    if (!senhaCorreta) {
-      return res.json({ sucesso: false, mensagem: 'Palavra-passe incorreta.' });
-    }
-
-    res.json({
-      sucesso: true,
-      usuario: {
-        nick: user.nick,
-        id: user.id,
-        rg: user.id + 10000,
-        dinheiro: user.dinheiro,
-        banco: user.banco,
-        level: user.level,
-        organizacao: user.organizacao
-      }
+    const respostaBrevo = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'api-key': process.env.SMTP_PASS // Utiliza a chave da Brevo configurada no Render
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "Brasil Play Alpha",
+          email: process.env.SMTP_USER // O seu e-mail verificado na Brevo configurado no Render
+        },
+        to: [
+          {
+            email: email
+          }
+        ],
+        subject: "Código de Verificação - UCP Brasil Play Alpha",
+        htmlContent: `
+          <div style="background:#080808; color:#fff; padding:24px; font-family:sans-serif; border-radius:12px; border:1px solid #ff2a2a; max-width:400px; margin:0 auto;">
+            <h2 style="color:#ff2a2a; text-align:center; margin-bottom:16px;">BRASIL PLAY ALPHA</h2>
+            <p style="font-size:0.9rem; color:#ccc;">Recebemos um pedido de registo na UCP com este e-mail.</p>
+            <p style="font-size:0.9rem; color:#ccc;">O seu código de verificação de 6 dígitos é:</p>
+            <div style="background:rgba(255,42,42,0.1); border:1px solid #ff2a2a; border-radius:8px; padding:12px; text-align:center; margin:20px 0;">
+              <span style="font-size:1.8rem; font-weight:bold; color:#ff2a2a; letter-spacing:6px;">${codigoOtp}</span>
+            </div>
+            <p style="font-size:0.75rem; color:#888; text-align:center; margin-top:16px;">Se não foi você que solicitou, ignore esta mensagem.</p>
+          </div>
+        `
+      })
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao autenticar.' });
+
+    const dadosResposta = await respostaBrevo.json();
+
+    if (!respostaBrevo.ok) {
+      console.error('Erro retornado pela API da Brevo:', dadosResposta);
+      return res.status(500).json({ 
+        sucesso: false, 
+        mensagem: 'Erro ao enviar e-mail pela API da Brevo.',
+        detalhes: dadosResposta 
+      });
+    }
+
+    return res.json({ sucesso: true, mensagem: 'Código enviado com sucesso!' });
+
+  } catch (erro) {
+    console.error('Erro crítico na requisição de envio:', erro);
+    return res.status(500).json({ sucesso: false, mensagem: 'Erro interno ao tentar enviar o e-mail.' });
   }
+});
+
+// Rota opcional para validar o código inserido pelo jogador
+app.post('/api/validar-codigo', (req, res) => {
+  const { email, codigo } = req.body;
+
+  if (!email || !codigo) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Dados incompletos.' });
+  }
+
+  if (codigosArmazenados[email] && codigosArmazenados[email] === codigo) {
+    delete codigosArmazenados[email]; // Código usado é descartado
+    return res.json({ sucesso: true, mensagem: 'Código validado com sucesso!' });
+  }
+
+  return res.status(400).json({ sucesso: false, mensagem: 'Código inválido ou expirado.' });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor UCP autónomo rodando na porta ${PORT}`);
+  console.log(`Servidor a correr na porta ${PORT}`);
 });
