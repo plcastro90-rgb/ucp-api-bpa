@@ -1,7 +1,7 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt');
 const cors = require('cors');
+const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app = express();
@@ -10,10 +10,10 @@ app.use(cors());
 
 // Configuração da conexão com o MySQL da VPS
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,         // IP ou Host da VPS
-  user: process.env.DB_USER,         // Utilizador do MySQL
-  password: process.env.DB_PASSWORD, // Senha do MySQL
-  database: process.env.DB_NAME,     // Nome da Base de Dados
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   port: process.env.DB_PORT || 3306,
   waitForConnections: true,
   connectionLimit: 10,
@@ -29,7 +29,12 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Rota de Registo adaptada à tabela do servidor
+// Função auxiliar para gerar hash MD5 (compatível com SA-MP)
+function gerarMD5(senha) {
+  return crypto.createHash('md5').update(senha).digest('hex');
+}
+
+// Rota de Registo ajustada para a tabela 'usuarios' do SA-MP
 app.post('/api/register', async (req, res) => {
   const { nick, pass, email } = req.body;
 
@@ -38,18 +43,16 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    // Verificar se o nick já existe (usando a coluna 'Nick')
-    const [existente] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const [existente] = await pool.query('SELECT * FROM usuarios WHERE LOWER(Nick) = LOWER(?)', [nick]);
     if (existente.length > 0) {
       return res.json({ sucesso: false, mensagem: 'Este nick já está registado na UCP/Servidor.' });
     }
 
-    const hashedPassword = await bcrypt.hash(pass, 10);
+    const senhaCriptografada = gerarMD5(pass);
     
-    // Inserir novo utilizador utilizando as colunas detetadas na BD
     await pool.query(
-      `INSERT INTO players (Nick, Senha, Level, Dinheiro, Banco) VALUES (?, ?, 1, 5000, 1000)`,
-      [nick, hashedPassword]
+      `INSERT INTO usuarios (Nick, Senha, Level, Dinheiro, Conta) VALUES (?, ?, 1, 5000, 1000)`,
+      [nick, senhaCriptografada]
     );
 
     res.json({ sucesso: true, mensagem: 'Conta criada com sucesso!' });
@@ -59,7 +62,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Rota de Login adaptada à tabela do servidor
+// Rota de Login ajustada para a tabela 'usuarios' do SA-MP
 app.post('/api/login', async (req, res) => {
   const { nick, pass } = req.body;
 
@@ -68,16 +71,17 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    const [resultado] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const [resultado] = await pool.query('SELECT * FROM usuarios WHERE LOWER(Nick) = LOWER(?)', [nick]);
     
     if (resultado.length === 0) {
       return res.json({ sucesso: false, mensagem: 'Utilizador não encontrado. Crie uma conta.' });
     }
 
     const user = resultado[0];
-    const senhaCorreta = await bcrypt.compare(pass, user.Senha);
+    const senhaCriptografada = gerarMD5(pass);
 
-    if (!senhaCorreta) {
+    // Valida tanto em MD5 quanto em texto plano caso o GM salve direto
+    if (user.Senha !== senhaCriptografada && user.Senha !== pass) {
       return res.json({ sucesso: false, mensagem: 'Palavra-passe incorreta.' });
     }
 
@@ -85,10 +89,10 @@ app.post('/api/login', async (req, res) => {
       sucesso: true,
       usuario: {
         nick: user.Nick,
-        id: user.ID, // ou ID Primária dependendo do select
+        id: user.ID || 1,
         rg: (user.ID || 1) + 10000,
         dinheiro: parseFloat(user.Dinheiro || 0),
-        banco: parseFloat(user.Banco || 0),
+        banco: parseFloat(user.Conta || 0),
         level: user.Level || 1,
         organizacao: user.Membro || 0
       }
@@ -108,7 +112,7 @@ app.post('/api/forgot-password', async (req, res) => {
   }
 
   try {
-    const [resultado] = await pool.query('SELECT * FROM players WHERE LOWER(Nick) = LOWER(?)', [nick]);
+    const [resultado] = await pool.query('SELECT * FROM usuarios WHERE LOWER(Nick) = LOWER(?)', [nick]);
 
     if (resultado.length === 0) {
       return res.json({ sucesso: false, mensagem: 'Nenhum registo encontrado com este nick.' });
