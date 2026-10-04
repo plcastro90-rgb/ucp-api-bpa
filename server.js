@@ -6,7 +6,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Variável temporária ou base de dados para guardar os códigos OTP gerados
+// Variável temporária para guardar os códigos OTP gerados
 // Exemplo: { "seuemail@dominio.com": "123456" }
 const codigosArmazenados = {};
 
@@ -81,7 +81,7 @@ app.post('/api/enviar-codigo', async (req, res) => {
   }
 });
 
-// Rota opcional para validar o código inserido pelo jogador
+// Rota para validar o código inserido pelo jogador
 app.post('/api/validar-codigo', (req, res) => {
   const { email, codigo } = req.body;
 
@@ -95,6 +95,48 @@ app.post('/api/validar-codigo', (req, res) => {
   }
 
   return res.status(400).json({ sucesso: false, mensagem: 'Código inválido ou expirado.' });
+});
+
+// Rota de Registo
+app.post('/api/register', (req, res) => {
+  const { email, pass, codigo, nick } = req.body;
+
+  if (!email || !pass || !codigo) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Preencha todos os campos obrigatórios.' });
+  }
+
+  // Verificar se o código OTP coincide
+  if (!codigosArmazenados[email] || codigosArmazenados[email] !== codigo) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Código de verificação inválido ou expirado.' });
+  }
+
+  // Apagar o código após uso bem-sucedido
+  delete codigosArmazenados[email];
+
+  return res.json({ sucesso: true, mensagem: 'Conta criada com sucesso!' });
+});
+
+// Rota de Login
+app.post('/api/login', (req, res) => {
+  const { email, pass, servidor } = req.body;
+
+  if (!email || !pass) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Preencha o e-mail e a palavra-passe.' });
+  }
+
+  return res.json({
+    sucesso: true,
+    mensagem: 'Login efetuado com sucesso!',
+    usuario: {
+      nick: email.split('@')[0],
+      id: '3492',
+      rg: '89120',
+      dinheiro: 1500000,
+      banco: 15420000,
+      level: 65,
+      organizacao: 'Civil / Nenhum'
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
