@@ -3,12 +3,26 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
 const filePath = path.join(__dirname, 'usuarios.json');
+
+// Configuração do Nodemailer com as credenciais da Brevo
+const transporter = nodemailer.createTransport({
+    host: 'smtp-relay.brevo.com',
+    port: 587,
+    auth: {
+        user: 'plcastro90@gmail.com',
+        pass: 'Xsmtpsib-ce9203d3c7001c5d0e28afaab606ca48e4f008e99185a3f3f567203bb63cc9b9-Me6CRPPSPG8ZrEqx'
+    }
+});
+
+// Objeto temporário para guardar os códigos gerados por e-mail
+const codigosTemporarios = {};
 
 // Função para ler utilizadores
 function lerUsuarios() {
@@ -28,12 +42,41 @@ function salvarUsuarios(usuarios) {
   fs.writeFileSync(filePath, JSON.stringify(usuarios, null, 2));
 }
 
-// Rota de Registo
-app.post('/api/register', async (req, res) => {
-  const { nick, pass, email } = req.body;
+// Rota para Enviar o Código de Verificação por E-mail
+app.post('/api/enviar-codigo', async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+        return res.status(400).json({ sucesso: false, mensagem: 'E-mail obrigatório.' });
+    }
 
-  if (!nick || !pass) {
-    return res.json({ sucesso: false, mensagem: 'Preencha o nick e a palavra-passe.' });
+    const codigo = Math.floor(100000 + Math.random() * 900000).toString();
+    codigosTemporarios[email] = codigo;
+
+    try {
+        await transporter.sendMail({
+            from: '"Brasil Play Alpha" <plcastro90@gmail.com>',
+            to: email,
+            subject: 'Código de Verificação UCP - Brasil Play Alpha',
+            text: `O seu código de verificação para criar a conta é: ${codigo}`
+        });
+        res.json({ sucesso: true, mensagem: 'Código enviado com sucesso para o e-mail!' });
+    } catch (erro) {
+        console.error('Erro ao enviar e-mail:', erro);
+        res.status(500).json({ sucesso: false, mensagem: 'Erro ao enviar o e-mail.' });
+    }
+});
+
+// Rota de Registo com Validação do Código e Salvamento
+app.post('/api/register', async (req, res) => {
+  const { nick, pass, email, codigo } = req.body;
+
+  if (!nick || !pass || !email || !codigo) {
+    return res.json({ sucesso: false, mensagem: 'Preencha todos os campos, incluindo o código de verificação.' });
+  }
+
+  // Validar o código de verificação enviado
+  if (!codigosTemporarios[email] || codigosTemporarios[email] !== codigo) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Código de verificação inválido ou expirado!' });
   }
 
   const usuarios = lerUsuarios();
@@ -49,7 +92,7 @@ app.post('/api/register', async (req, res) => {
       id: usuarios.length + 1,
       nick: nick,
       senha: hashedPassword,
-      email: email || '',
+      email: email,
       dinheiro: 5000.00,
       banco: 1000.00,
       level: 1,
@@ -58,6 +101,9 @@ app.post('/api/register', async (req, res) => {
 
     usuarios.push(novoUsuario);
     salvarUsuarios(usuarios);
+
+    // Remove o código temporário após o uso bem-sucedido
+    delete codigosTemporarios[email];
 
     res.json({ sucesso: true, mensagem: 'Conta criada com sucesso na UCP!' });
   } catch (error) {
