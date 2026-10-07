@@ -97,7 +97,7 @@ app.post('/api/enviar-codigo', async (req, res) => {
 });
 
 // Rota para validar o código inserido pelo jogador
-app.post('/api/validar-codigo', (req, res) => {
+app.post('/api/verificar-codigo', (req, res) => {
   const { email, codigo } = req.body;
 
   if (!email || !codigo) {
@@ -146,26 +146,31 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Rota de Login
+// Rota de Login atualizada para permitir autenticação tanto por 'nick' quanto por 'email'
 app.post('/api/login', async (req, res) => {
-  const { email, pass } = req.body;
+  const { nick, pass } = req.body;
 
-  if (!email || !pass) {
-    return res.status(400).json({ sucesso: false, mensagem: 'Preencha o e-mail e a palavra-passe.' });
+  if (!nick || !pass) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Preencha o utilizador e a palavra-passe.' });
   }
 
   try {
-    // Procurar o utilizador na base de dados
-    const usuario = await Usuario.findOne({ email, pass });
+    // Procurar o utilizador na base de dados verificando se o valor corresponde ao nick ou ao email
+    const usuario = await Usuario.findOne({
+      $or: [{ nick: nick }, { email: nick }],
+      pass: pass
+    });
+
     if (!usuario) {
-      return res.status(400).json({ sucesso: false, mensagem: 'E-mail ou palavra-passe incorretos.' });
+      return res.status(400).json({ sucesso: false, mensagem: 'E-mail, nick ou palavra-passe incorretos.' });
     }
 
     return res.json({
       sucesso: true,
       mensagem: 'Login efetuado com sucesso!',
+      nick: usuario.nick,
       usuario: {
-        nick: usuario.nick || email.split('@')[0],
+        nick: usuario.nick,
         id: usuario._id,
         dinheiro: 1500000,
         banco: 15420000,
