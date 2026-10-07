@@ -146,31 +146,28 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Rota de Login atualizada para permitir autenticação tanto por 'nick' quanto por 'email'
+// Rota de Login estritamente por E-mail e Palavra-passe
 app.post('/api/login', async (req, res) => {
-  const { nick, pass } = req.body;
+  const { email, pass } = req.body;
 
-  if (!nick || !pass) {
-    return res.status(400).json({ sucesso: false, mensagem: 'Preencha o utilizador e a palavra-passe.' });
+  if (!email || !pass) {
+    return res.status(400).json({ sucesso: false, mensagem: 'Preencha o e-mail e a palavra-passe.' });
   }
 
   try {
-    // Procurar o utilizador na base de dados verificando se o valor corresponde ao nick ou ao email
-    const usuario = await Usuario.findOne({
-      $or: [{ nick: nick }, { email: nick }],
-      pass: pass
-    });
+    // Procurar o utilizador na base de dados utilizando estritamente o e-mail e a palavra-passe
+    const usuario = await Usuario.findOne({ email, pass });
 
     if (!usuario) {
-      return res.status(400).json({ sucesso: false, mensagem: 'E-mail, nick ou palavra-passe incorretos.' });
+      return res.status(400).json({ sucesso: false, mensagem: 'E-mail ou palavra-passe incorretos.' });
     }
 
     return res.json({
       sucesso: true,
       mensagem: 'Login efetuado com sucesso!',
-      nick: usuario.nick,
+      nick: usuario.nick || email.split('@')[0],
       usuario: {
-        nick: usuario.nick,
+        nick: usuario.nick || email.split('@')[0],
         id: usuario._id,
         dinheiro: 1500000,
         banco: 15420000,
